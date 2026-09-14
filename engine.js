@@ -4,6 +4,7 @@
   const TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Chicago";
   const BLOCK_SECONDS = 7200;
   const SLOT_HOURS = [0,2,4,6,8,10,12,14,16,18,20,22];
+  const COUNTS_PER_DAY = {synth:3, science:6, movie:3};
 
   function stationParts(date) {
     const parts = new Intl.DateTimeFormat("en-US", {
@@ -29,6 +30,11 @@
     return `${part.year}-${String(part.month).padStart(2,"0")}-${String(part.day).padStart(2,"0")}`;
   }
 
+  function mondayIndex(nowMs) {
+    const weekday = new Intl.DateTimeFormat("en-US", {timeZone:TIME_ZONE,weekday:"short"}).format(new Date(nowMs));
+    return ({Mon:0,Tue:1,Wed:2,Thu:3,Fri:4,Sat:5,Sun:6})[weekday] ?? 0;
+  }
+
   function hash(text) {
     let value = 2166136261;
     for (let index = 0; index < text.length; index += 1) value = Math.imul(value ^ text.charCodeAt(index), 16777619);
@@ -36,6 +42,7 @@
   }
 
   function seededShuffle(items, seedText) {
+    if (root.InfinityChannelPolicy) return root.InfinityChannelPolicy.seededShuffle(items, seedText);
     const copy = items.slice();
     let seed = hash(seedText);
     const random = () => {
@@ -62,27 +69,65 @@
     return kind === "synth" ? "MIDNIGHT SYNTH" : kind === "movie" ? "PHYSICS AT THE MOVIES" : "PHYSICS LAB";
   }
 
+  function minRuntimeFor(kind) {
+    return kind === "movie" ? 2400 : kind === "science" ? 1200 : 1200;
+  }
+
+  function sourcePool(catalog, poolKey, kind) {
+    const source = Array.isArray(catalog && catalog[poolKey]) ? catalog[poolKey] : [];
+    if (root.InfinityChannelPolicy) {
+      return root.InfinityChannelPolicy.eligiblePrograms(source, {slotSeconds:BLOCK_SECONDS,minRuntimeSeconds:minRuntimeFor(kind)});
+    }
+    const seen = new Set();
+    return source.filter(item => {
+      if (!item || !item.cleared || !item.videoId || Number(item.runtimeSeconds || 0) < minRuntimeFor(kind) || seen.has(item.videoId)) return false;
+      seen.add(item.videoId);
+      return true;
+    });
+  }
+
+  function missingProgram(kind, todayKey, slotIndex) {
+    return {
+      id:`physics-fresh-${todayKey}-${slotIndex}`,
+      title: kind === "movie" ? "Fresh physics movie source needed" : "Fresh physics program source needed",
+      videoId:"",
+      runtimeSeconds:BLOCK_SECONDS,
+      year:"",
+      collection:"Repeat blocked by seven-day scheduler",
+      source:"Physics TV catalog",
+      cleared:false,
+      refill:true
+    };
+  }
+
   function createDaySchedule(nowMs, catalog) {
     const part = stationParts(new Date(nowMs));
     const midnightMs = zonedToUtc(part.year, part.month, part.day);
-    const dayNumber = Math.floor(midnightMs / 86400000);
-    const weekNumber = Math.floor(dayNumber / 7);
+    const epochDay = Math.floor(midnightMs / 86400000);
+    const dayOfDeck = mondayIndex(nowMs);
+    const mondayEpochDay = epochDay - dayOfDeck;
+    const weekNumber = Math.floor(mondayEpochDay / 7);
     const todayKey = dateKey(nowMs);
-    const pools = {};
-    ["science","movies","synth"].forEach(key => {
-      const pool = Array.isArray(catalog && catalog[key]) ? catalog[key].filter(item => item && item.cleared && item.videoId) : [];
-      if (!pool.length) throw new Error(`No Physics TV ${key} sources are ready.`);
-      pools[key] = seededShuffle(pool, `physics-tv-${key}-week-${weekNumber}`);
-    });
+    const pools = {
+      science: seededShuffle(sourcePool(catalog,"science","science"), `physics-tv-science-seven-day-${weekNumber}`),
+      movies: seededShuffle(sourcePool(catalog,"movies","movie"), `physics-tv-movie-seven-day-${weekNumber}`),
+      synth: seededShuffle(sourcePool(catalog,"synth","synth"), `physics-tv-synth-${weekNumber}`)
+    };
     const counters = {science:0, movie:0, synth:0};
-    const countsPerDay = {science:6, movie:3, synth:3};
+
     return SLOT_HOURS.map((hour, slotIndex) => {
       const kind = kindForHour(hour);
       const poolKey = kind === "movie" ? "movies" : kind;
-      const countKey = kind;
       const pool = pools[poolKey];
-      const index = (dayNumber * countsPerDay[countKey] + counters[countKey]++) % pool.length;
-      const program = pool[(index + pool.length) % pool.length];
+      const localIndex = counters[kind]++;
+      let program;
+      if (kind === "synth") {
+        // Overnight synth is ambient programming, not an episode/movie deck. It may repeat until more mixes are added.
+        program = pool.length ? pool[localIndex % pool.length] : missingProgram(kind,todayKey,slotIndex);
+      } else {
+        const deckIndex = dayOfDeck * COUNTS_PER_DAY[kind] + localIndex;
+        program = pool[deckIndex] || missingProgram(kind,todayKey,slotIndex);
+      }
       const startsAtMs = midnightMs + hour * 3600000;
       return {
         id:`${todayKey}-${String(slotIndex).padStart(2,"0")}`,
@@ -97,7 +142,7 @@
     const requested = Math.max(60, Math.floor(Number(block.program.runtimeSeconds) || BLOCK_SECONDS));
     const duration = Math.min(BLOCK_SECONDS, requested);
     const segments = [{
-      kind:block.kind, title:block.program.title, videoId:block.program.videoId, cleared:true,
+      kind:block.kind, title:block.program.title, videoId:block.program.videoId, cleared:!!block.program.cleared,
       sourceStart:0, stationStart:0, duration
     }];
     if (duration < BLOCK_SECONDS) {
@@ -120,5 +165,5 @@
     };
   }
 
-  root.PhysicsEngine = { TIME_ZONE, BLOCK_SECONDS, dateKey, stationParts, zonedToUtc, kindForHour, labelForKind, createDaySchedule, createSegments, resolve };
+  root.PhysicsEngine = { TIME_ZONE, BLOCK_SECONDS, dateKey, stationParts, zonedToUtc, mondayIndex, kindForHour, labelForKind, createDaySchedule, createSegments, resolve };
 })(window);
