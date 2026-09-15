@@ -88,15 +88,14 @@
 
   function missingProgram(kind, todayKey, slotIndex) {
     return {
-      id:`physics-fresh-${todayKey}-${slotIndex}`,
-      title: kind === "movie" ? "Fresh physics movie source needed" : "Fresh physics program source needed",
+      id:`physics-empty-${todayKey}-${slotIndex}`,
+      title: kind === "movie" ? "Physics movie source unavailable" : "Physics program source unavailable",
       videoId:"",
       runtimeSeconds:BLOCK_SECONDS,
       year:"",
-      collection:"Repeat blocked by seven-day scheduler",
+      collection:"No usable source exists in this category",
       source:"Physics TV catalog",
-      cleared:false,
-      refill:true
+      cleared:false
     };
   }
 
@@ -120,14 +119,10 @@
       const poolKey = kind === "movie" ? "movies" : kind;
       const pool = pools[poolKey];
       const localIndex = counters[kind]++;
-      let program;
-      if (kind === "synth") {
-        // Overnight synth is ambient programming, not an episode/movie deck. It may repeat until more mixes are added.
-        program = pool.length ? pool[localIndex % pool.length] : missingProgram(kind,todayKey,slotIndex);
-      } else {
-        const deckIndex = dayOfDeck * COUNTS_PER_DAY[kind] + localIndex;
-        program = pool[deckIndex] || missingProgram(kind,todayKey,slotIndex);
-      }
+      const deckIndex = dayOfDeck * COUNTS_PER_DAY[kind] + localIndex;
+      // Exhaust the real pool before wrapping. Never turn an existing program
+      // into an empty "fresh source needed" block just to avoid repetition.
+      const program = pool.length ? pool[deckIndex % pool.length] : missingProgram(kind,todayKey,slotIndex);
       const startsAtMs = midnightMs + hour * 3600000;
       return {
         id:`${todayKey}-${String(slotIndex).padStart(2,"0")}`,
